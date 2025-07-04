@@ -1,6 +1,5 @@
 install.packages("pacman")
 
-install.packages("dsr")
 
 pacman::p_load(tidyverse, dsr, janitor, readr)
 
@@ -9,7 +8,6 @@ sinan <- read_csv2("sinannet_cnv_tubercbr10092810_1_247_107.csv",
 pop <- 
 
 dados <- sinan_tb %>%
-  filter(ano == 2023) %>%
   mutate(faixa_etaria = cut(idade, breaks = c(0, 14, 44, 64, Inf),
                             labels = c("0-14", "15-44", "45-64", "65+")),
          sexo = case_when(sexo == "M" ~ "Masculino",
@@ -26,8 +24,8 @@ dados <- dados %>%
 
 resultados <- dsr::dsr(
   x = dados$casos,
-  n = dados$pop,           # população observada
-  stdpop = dados$pop_padrao,  # população padrão
+  n = dados$pop,           
+  stdpop = dados$pop_padrao,  
   method = "gamma",
   group = dados$regiao_saude
 )
