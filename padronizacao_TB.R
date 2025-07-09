@@ -1,38 +1,35 @@
-install.packages("pacman")
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(tidyverse, epitools, janitor, readr, readxl)
 
-
-pacman::p_load(tidyverse, dsr, janitor, readr, readxl)
+# --- LIMPEZA ---
+standardize_names <- function(text) {
+  text <- toupper(text)
+  text <- chartr("ÁÀÂÃÉÈÊÍÌÎÓÒÔÕÚÙÛÇ", "AAAAEEEIIIOOOOUUUC", text)
+  return(text)
+}
 
 pop_raw <- read_xlsx("projecoes_2024_tab1_idade_simples.xlsx",
-                    skip = 4) %>% clean_names() 
+                     skip = 4) %>% clean_names()
 
-pop_2024 <- pop_raw %>%
+pop_2024_filtrado <- pop_raw %>%
   select(x1, x2, x3, x4, x5, x30) %>%
   filter(!x5 %in% c("Brasil", "Norte", "Nordeste", "Sudeste", "Sul", "Centro-Oeste")) %>%
   filter(x2 == "Ambos") %>%
   mutate(x1 = as.numeric(x1)) %>%
   filter(!is.na(x1))
 
-
-pop_agrupada <- pop_2024 %>%
-  rename(
-    idade = x1,
-    sexo = x2,
-    cod_uf = x3,
-    sigla_uf = x4,
-    uf = x5,
-    pop = x30
-  ) %>%
+pop_agrupada <- pop_2024_filtrado %>%
+  rename(idade = x1, sexo = x2, cod_uf = x3, sigla_uf = x4, uf = x5, pop = x30) %>%
   mutate(faixa_etaria = cut(idade,
                             breaks = c(-1, 14, 44, 64, Inf),
                             labels = c("0-14", "15-44", "45-64", "65+"))) %>%
+  mutate(uf = standardize_names(uf)) %>%
   group_by(uf, faixa_etaria) %>%
   summarise(pop = sum(pop), .groups = 'drop')
 
-
-
 sinan_raw <- read_csv2("sinannet_cnv_tubercbr10092810_1_247_107.csv",
-                       locale = locale(encoding = "Latin1")) %>% clean_names()
+                       locale = locale(encoding = "Latin1")) %>%
+  clean_names()
 
 ufs_map <- data.frame(
   uf_cod = c("11", "12", "13", "14", "15", "16", "17", "21", "22", "23", "24", "25", "26", "27", "28", "29", "31", "32", "33", "35", "41", "42", "43", "50", "51", "52", "53"),
@@ -44,7 +41,6 @@ sinan_com_uf <- sinan_raw %>%
   left_join(ufs_map, by = "uf_cod")
 
 dados_casos <- sinan_com_uf %>%
-  # Seleciona as colunas relevantes
   select(uf = uf_nome, starts_with("x")) %>%
   pivot_longer(cols = -uf,
                names_to = "grupo_etario_original",
@@ -58,31 +54,35 @@ dados_casos <- sinan_com_uf %>%
     grupo_etario_original %in% c("x65_69", "x70_79", "x80_e") ~ "65+"
   )) %>%
   filter(!is.na(faixa_etaria) & !is.na(uf)) %>%
+  mutate(uf = standardize_names(uf)) %>%
   group_by(uf, faixa_etaria) %>%
-  summarise(casos = sum(casos), .groups = 'drop')
+  summarise(casos = sum(casos), .groups = 'drop') %>%
+  complete(uf, faixa_etaria, fill = list(casos = 0))
 
+dados_completos <- left_join(dados_casos, pop_agrupada, by = c("uf", "faixa_etaria")) %>%
+  mutate(pop = coalesce(pop, 0))
 
-dados_completos <- left_join(dados_casos, pop_agrupada, by = c("uf", "faixa_etaria"))
-
-
-pop_padrao <- pop_agrupada %>%
+pop_padrao <- dados_completos %>%
   group_by(faixa_etaria) %>%
-  summarise(pop_padrao = sum(pop))
+  summarise(pop = sum(pop, na.rm = TRUE)) %>%
+  ungroup()
 
 
-dados_finais <- left_join(dados_completos, pop_padrao, by = "faixa_etaria") %>%
-  filter(!is.na(pop) & !is.na(casos)) 
+resultados_finais <- dados_completos %>%
+  arrange(uf, faixa_etaria) %>%
+  group_by(uf) %>%
+  nest() %>%
+  mutate(
+    resultado_calculo = map(data, ~ ageadjust.direct(
+      count = .x$casos,
+      pop = .x$pop,
+      stdpop = pop_padrao$pop
+    ))
+  ) %>%
+  mutate(
+    taxa_ajustada_raw = map_dbl(resultado_calculo, ~ .x["adj.rate"]),
+    taxa_ajustada_por_100k = taxa_ajustada_raw * 100000
+  ) %>%
+  select(uf, taxa_ajustada_por_100k)
 
-
-resultados_normalizados <- dsr::dsr(
-  data = dados_finais,
-  event = casos,
-  pop = pop,
-  stdpop = pop_padrao,
-  group = uf,
-  method = "gamma",
-  ci.level = 0.95
-)
-
-
-print(resultados_normalizados)
+print(resultados_finais)
