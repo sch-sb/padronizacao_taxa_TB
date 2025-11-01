@@ -14,12 +14,9 @@ if (!all(pkgs %in% rownames(installed.packages())))
 suppressWarnings(suppressMessages(library(pacman)))
 
 pacman::p_load(
-  tidyverse, janitor, stringr, lubridate, readr, purrr,
-  dsr,                      # padronização direta
-  PHEindicatormethods       # alternativa de padronização
-)
+  tidyverse, janitor, stringr, lubridate, readr, purrr, dsr, frailtypack, PHEindicatormethods)
 
-# Instalação (se precisar)
+# Instalação 
 if (!requireNamespace("dsr", quietly = TRUE)) {
   packageurl <- "https://cran.r-project.org/src/contrib/Archive/dsr/dsr_0.2.2.tar.gz"
   install.packages(packageurl, repos = NULL, type = "source")
@@ -35,15 +32,51 @@ options(scipen = 999)
 # -------------------------
 # 1) Parâmetros e caminhos
 # -------------------------
-PATH_BASE    <- "C:/CNIE/TB"
-ARQ_TB       <- file.path(PATH_BASE, "dados_TB_tratado3.csv")
-ARQ_POP2     <- file.path(PATH_BASE, "dados_pop2.csv")
+PATH_BASE <- "C:/Users/sacha/Documents/Padronizacao_TB"
+ARQ_TB    <- file.path(PATH_BASE, "dados_TB_tratado3.csv")
+ARQ_POP   <- file.path(PATH_BASE, "pop_proj_is.csv")
+ANO_INICIO <- 2013
+ANO_FIM    <- 2024     
+ANO_PADRAO <- 2022     
 
-# Ano da população padrão
-ANO_PADRAO <- 2022
+PATH_BASE <- "C:/Users/sacha/Documents/Padronizacao_TB"
+ARQ_TB    <- file.path(PATH_BASE, "dados_TB_tratado3.csv")
+ARQ_POP   <- file.path(PATH_BASE, "pop_proj_is.csv")
 
 # -------------------------
-# 1A) Tabela de UFs 
+# 1) Pacotes
+# -------------------------
+pkgs <- c("pacman")
+if (!all(pkgs %in% rownames(installed.packages())))
+  install.packages(setdiff(pkgs, rownames(installed.packages())))
+suppressWarnings(suppressMessages(library(pacman)))
+
+pacman::p_load(
+  tidyverse,
+  janitor,
+  stringr,
+  lubridate,
+  readr,
+  purrr,
+  dsr,
+  frailtypack,          
+  PHEindicatormethods
+)
+
+
+if (!requireNamespace("dsr", quietly = TRUE)) {
+  packageurl <- "https://cran.r-project.org/src/contrib/Archive/dsr/dsr_0.2.2.tar.gz"
+  install.packages(packageurl, repos = NULL, type = "source")
+}
+
+if (!requireNamespace("remotes", quietly = TRUE)) install.packages("remotes")
+if (!requireNamespace("PHEindicatormethods", quietly = TRUE)) {
+  remotes::install_github("ukhsa-collaboration/PHEindicatormethods",
+                          build_vignettes = FALSE, dependencies = TRUE)
+}
+
+# -------------------------
+# 2) Tabela de UFs 
 # -------------------------
 UF_NOMES <- tibble::tribble(
   ~cod_uf, ~sigla_uf, ~nome_uf,
@@ -78,31 +111,32 @@ UF_NOMES <- tibble::tribble(
 )
 
 # -------------------------
-# 2) Funções 
+# 3) Funções auxiliares
 # -------------------------
-faixa_to_gi <- function(x) {
-  x2 <- str_to_lower(str_trim(x))
-  gi <- case_when(
-    str_detect(x2, "menos de 1") ~ 0L,
-    str_detect(x2, "0?0\\s*a\\s*0?4") ~ 0L,
-    str_detect(x2, "80\\s*anos?\\s*ou\\s*mais") ~ 80L,
-    TRUE ~ suppressWarnings(as.integer(str_extract(x2, "\\d{1,2}")))
-  )
-  gi <- replace_na(gi, 0L)
-  pmin(gi, 80L)
-}
+
 
 idade_to_gi <- function(idade_num) {
-  gi <- suppressWarnings(as.integer(floor(idade_num / 5) * 5))
-  gi[is.na(gi)] <- NA_integer_
-  pmin(gi, 80L)
+  gi <- floor(idade_num / 5) * 5
+  gi <- ifelse(idade_num %in% 1:4, 1L, gi)
+  gi[is.na(idade_num)] <- NA_integer_
+  gi <- ifelse(gi > 80, 80L, gi)
+  gi
 }
 
-norm_sexo <- function(x) {
+norm_sexo_tb <- function(x) {
   x2 <- str_to_lower(x)
   case_when(
     str_detect(x2, "^f") ~ "Feminino",
     str_detect(x2, "^m") ~ "Masculino",
+    TRUE ~ NA_character_
+  )
+}
+
+norm_sexo_pop <- function(x) {
+  x2 <- str_to_lower(str_trim(x))
+  case_when(
+    x2 %in% c("h", "homem", "masc", "masculino") ~ "Masculino",
+    x2 %in% c("m", "mulher", "f", "fem", "feminino") ~ "Feminino",
     TRUE ~ NA_character_
   )
 }
@@ -112,16 +146,17 @@ mun_to_uf <- function(cod_mun) {
 }
 
 # -------------------------
-# 3) Leitura das bases
+# 4) Leitura das bases
 # -------------------------
 
-# 3.1) TB 
-TB_raw <- read_csv2(ARQ_TB, show_col_types = FALSE) %>% clean_names()
+# 4.1) TB (casos)
+TB_raw <- read_csv2(ARQ_TB, show_col_types = FALSE) %>%
+  clean_names()
 
 TB <- TB_raw %>%
   mutate(
     ano        = coalesce(nu_ano, year(dt_notific), year(dt_noti_at), year(dt_diag)),
-    sexo       = norm_sexo(cs_sexo),
+    sexo       = norm_sexo_tb(cs_sexo),
     cod_mun    = coalesce(id_mn_resi, id_municip, id_munic_a, id_munic_2),
     cod_uf     = coalesce(sg_uf, sg_uf_2, as.numeric(mun_to_uf(cod_mun))),
     idade_anos = coalesce(nu_idade_n_anos_completa, nu_idade_n_anos),
@@ -134,26 +169,35 @@ TB <- TB_raw %>%
       TRUE ~ TRUE
     )
   ) %>%
-  filter(!is.na(ano), !is.na(gi), !is.na(sexo), !is.na(cod_uf), eh_caso_novo) %>%
+  filter(!is.na(ano),
+         ano >= ANO_INICIO,
+         ano <= ANO_FIM,
+         !is.na(gi), !is.na(sexo), !is.na(cod_uf),
+         eh_caso_novo) %>%
   mutate(cod_uf = as.integer(cod_uf)) %>%
-  select(ano, cod_uf, sexo, gi)
+  dplyr::select(ano, cod_uf, sexo, gi)
 
-# 3.2) População
-pop2 <- read_csv2(ARQ_POP2, show_col_types = FALSE, locale = locale(encoding = "UTF-8")) %>%
-  clean_names() %>%
+# 4.2) População 
+pop_raw <- read_csv2(ARQ_POP, show_col_types = FALSE,
+                     locale = locale(encoding = "UTF-8")) %>%
+  clean_names()
+
+pop_uf <- pop_raw %>%
   mutate(
-    sexo   = norm_sexo(sexo_cat),
-    gi     = faixa_to_gi(faixa_etaria),
-    cod_uf = as.integer(cod_uf)
+    sexo   = norm_sexo_pop(sexo),
+    gi     = idade_to_gi(idade),
+    cod_uf = as.integer(cod_uf),
+    ano    = as.integer(ano)
   ) %>%
-  filter(!is.na(ano), !is.na(gi), !is.na(sexo), !is.na(cod_uf)) %>%
+  filter(!is.na(ano),
+         ano >= ANO_INICIO,
+         ano <= ANO_FIM,
+         !is.na(gi), !is.na(sexo), !is.na(cod_uf)) %>%
   group_by(ano, cod_uf, sexo, gi) %>%
-  summarise(pop = sum(pop, na.rm = TRUE), .groups = "drop")
+  summarise(pop = sum(populacao, na.rm = TRUE), .groups = "drop")
 
-# 3.3) POP_UF
-POP_UF <- pop2
 
-# 3.4) Adiciona Brasil (99)
+POP_UF <- pop_uf
 POP_BR <- POP_UF %>%
   group_by(ano, sexo, gi) %>%
   summarise(pop = sum(pop, na.rm = TRUE), .groups = "drop") %>%
@@ -163,7 +207,7 @@ POP <- bind_rows(POP_UF, POP_BR) %>%
   arrange(ano, cod_uf, sexo, gi)
 
 # -------------------------
-# 4) Eventos (casos) agregados por UF/BR, sexo, gi
+# 5) Eventos agregados 
 # -------------------------
 CASOS_UF <- TB %>%
   group_by(ano, cod_uf, sexo, gi) %>%
@@ -178,7 +222,7 @@ CASOS <- bind_rows(CASOS_UF, CASOS_BR) %>%
   arrange(ano, cod_uf, sexo, gi)
 
 # -------------------------
-# 5) Grade completa
+# 6) Grade completa
 # -------------------------
 GRADE <- POP %>% distinct(ano, cod_uf, sexo, gi)
 
@@ -188,7 +232,7 @@ db_full <- GRADE %>%
   mutate(eventos = replace_na(eventos, 0L))
 
 # -------------------------
-# 6) Dados 
+# 7) Dados - sexo
 # -------------------------
 db_ambos <- db_full %>%
   group_by(cod_uf, ano, gi) %>%
@@ -197,25 +241,32 @@ db_ambos <- db_full %>%
     eventos   = sum(eventos, na.rm = TRUE),
     .groups   = "drop"
   ) %>%
-  mutate(sexo = "ambos",
-         grupo = paste0(stringr::str_pad(cod_uf, 2, pad = "0"), "-", ano)) %>%
-  select(grupo, gi, sexo, populacao, eventos, cod_uf, ano)
+  mutate(
+    sexo  = "ambos",
+    grupo = paste0(stringr::str_pad(cod_uf, 2, pad = "0"), "-", ano)
+  ) %>%
+  dplyr::select(grupo, gi, sexo, populacao, eventos, cod_uf, ano)
 
 # -------------------------
-# 7) População padrão 
+# 8) População padrão 
 # -------------------------
-if (!(ANO_PADRAO %in% unique(POP$ano))) {
-  ANO_PADRAO <- max(POP$ano, na.rm = TRUE)
-  message("ANO_PADRAO não encontrado. Usando ano máximo disponível: ", ANO_PADRAO)
+if (!(ANO_PADRAO %in% unique(pop_raw$ano))) {
+  ANO_PADRAO <- max(pop_raw$ano, na.rm = TRUE)
+  message("ANO_PADRAO não encontrado na pop. Usando ano máximo disponível: ", ANO_PADRAO)
 }
-pop_padrao <- POP %>%
+
+pop_padrao <- pop_raw %>%
+  mutate(
+    sexo = norm_sexo_pop(sexo),
+    gi   = idade_to_gi(idade)
+  ) %>%
   filter(ano == ANO_PADRAO) %>%
   group_by(gi) %>%
-  summarise(pop = sum(pop, na.rm = TRUE), .groups = "drop") %>%
+  summarise(pop = sum(populacao, na.rm = TRUE), .groups = "drop") %>%
   mutate(sexo = "ambos")
 
 # -------------------------
-# 8) Padronização com dsr 
+# 9) Padronização com dsr
 # -------------------------
 TBI_padronizada_dsr <- dsr::dsr(
   data     = db_ambos,
@@ -232,29 +283,33 @@ TBI_padronizada_dsr <- dsr::dsr(
 )
 
 # -------------------------
-# 9) Limpeza dos nomes 
+# 10) Limpeza dos nomes
 # -------------------------
 find_col <- function(df, ...) {
   pats <- c(...)
   nm <- names(df)
   idx <- Reduce(`&`, lapply(pats, function(p) grepl(p, nm, ignore.case = TRUE)))
   hit <- nm[idx]
-  if (length(hit) == 0) stop("Não achei coluna com padrões: ", paste(pats, collapse = " & "),
-                             "\nNomes disponíveis:\n", paste(nm, collapse = "\n"))
+  if (length(hit) == 0) {
+    stop("Não achei coluna com padrões: ", paste(pats, collapse = " & "),
+         "\nNomes disponíveis:\n", paste(nm, collapse = "\n"))
+  }
   hit[1]
 }
 
 sub_col <- if ("Subgroup" %in% names(TBI_padronizada_dsr)) "Subgroup" else
   if ("subgroup" %in% names(TBI_padronizada_dsr)) "subgroup" else
-    if ("Group"    %in% names(TBI_padronizada_dsr)) "Group"    else
-      if ("group"    %in% names(TBI_padronizada_dsr)) "group"    else
+    if ("Group" %in% names(TBI_padronizada_dsr)) "Group" else
+      if ("group" %in% names(TBI_padronizada_dsr)) "group" else
         stop("Coluna de grupo não encontrada no resultado do dsr().")
 
 TBI_padronizada_dsr <- TBI_padronizada_dsr %>%
   mutate(
     cod_uf = as.integer(substr(.data[[sub_col]], 1, 2)),
-    ano    = readr::parse_integer(str_extract(.data[[sub_col]], "(\\d{4})$"))
-  )
+    ano    = readr::parse_integer(stringr::str_extract(.data[[sub_col]], "(\\d{4})$"))
+  ) %>%
+  # AQUI entra o teto de ano de novo
+  filter(ano >= ANO_INICIO, ano <= ANO_FIM)
 
 col_crude     <- find_col(TBI_padronizada_dsr, "crude", "rate")
 col_crude_lcl <- find_col(TBI_padronizada_dsr, "(95|ci)", "(lc[il]|lower)", "crude")
@@ -273,67 +328,56 @@ TBI_padronizada_dsr <- TBI_padronizada_dsr %>%
     TBI_padronizada_inf = .data[[col_std_lcl]],
     TBI_padronizada_sup = .data[[col_std_ucl]]
   ) %>%
-  select(cod_uf, ano, TBI, TBI_limite_inferior, TBI_limite_superior,
-         TBI_padronizada, TBI_padronizada_inf, TBI_padronizada_sup) %>%
+  dplyr::select(
+    cod_uf, ano,
+    TBI, TBI_limite_inferior, TBI_limite_superior,
+    TBI_padronizada, TBI_padronizada_inf, TBI_padronizada_sup
+  ) %>%
   arrange(cod_uf, ano) %>%
-  # <-- Junta nomes e siglas de UF
   left_join(UF_NOMES, by = "cod_uf")
-
 
 # -------------------------
 # 11) Visualizações 
 # -------------------------
 uf_escolha <- 31L
 dados_graf <- TBI_padronizada_dsr %>%
-  filter(cod_uf == uf_escolha, !is.na(ano), ano >= 2000)
+  filter(cod_uf == uf_escolha,
+         !is.na(ano),
+         ano >= ANO_INICIO,
+         ano <= ANO_FIM)
 
 titulo_uf <- if (nrow(dados_graf) > 0) {
-  sprintf("Evolução da TBI e TBI padronizada para Tuberculose – %s (%s)", 
+  sprintf("Evolução da TBI e TBI padronizada para Tuberculose – %s (%s)",
           unique(dados_graf$nome_uf), unique(dados_graf$sigla_uf))
 } else {
   sprintf("Evolução da TBI e TBI padronizada para Tuberculose – UF %02d", uf_escolha)
 }
 
 gg1 <- ggplot(dados_graf, aes(x = ano)) +
-  geom_ribbon(aes(ymin = TBI_limite_inferior, ymax = TBI_limite_superior, fill = "TBI"), alpha = 0.25) +
-  geom_ribbon(aes(ymin = TBI_padronizada_inf, ymax = TBI_padronizada_sup, fill = "TBI Padronizada"), alpha = 0.25) +
+  geom_ribbon(aes(ymin = TBI_limite_inferior,
+                  ymax = TBI_limite_superior,
+                  fill = "TBI"), alpha = 0.25) +
+  geom_ribbon(aes(ymin = TBI_padronizada_inf,
+                  ymax = TBI_padronizada_sup,
+                  fill = "TBI Padronizada"), alpha = 0.25) +
   geom_line(aes(y = TBI, color = "TBI")) +
   geom_line(aes(y = TBI_padronizada, color = "TBI Padronizada para Tuberculose")) +
   labs(
     title   = titulo_uf,
-    caption = "Fonte: SINAN TB (casos novos) + Populações por UF (IBGE).",
+    caption = "Fonte: SINAN TB (casos novos) + Projeções por idade (IBGE).",
     y = "por 100.000 hab.", x = "Ano",
     fill = "Intervalos", color = "Taxas"
   ) +
   scale_x_continuous(
-    limits = c(2000, max(dados_graf$ano, na.rm = TRUE)),
-    breaks = scales::pretty_breaks(n = 10),
-    expand = expansion(mult = c(0, 0.02))
+    limits = c(ANO_INICIO, ANO_FIM),
+    breaks = seq(ANO_INICIO, ANO_FIM, by = 1),
+    expand = expansion(mult = c(0, 0))
   ) +
   ylim(c(0, NA)) +
   theme_minimal() +
   theme(plot.caption = element_text(hjust = 0))
+
 print(gg1)
-
-# 11.2) Comparativo entre UFs em um ano específico (nomes no eixo)
-yy <- 2021L
-dados_rank <- TBI_padronizada_dsr %>%
-  filter(ano == yy, cod_uf != 99L)
-
-gg2 <- ggplot(dados_rank) +
-  geom_bar(aes(y = TBI_padronizada, x = reorder(nome_uf, -TBI_padronizada)),
-           alpha = .4, stat = 'identity', position = position_dodge(width = 0.8), show.legend = FALSE) +
-  geom_text(aes(y = TBI_padronizada, x = reorder(nome_uf, -TBI_padronizada),
-                label = sprintf("%.1f", TBI_padronizada)),
-            hjust = -0.15, size = 3.8) +
-  coord_flip() +
-  labs(
-    title = paste0("Comparação da TBI padronizada por UF em ", yy),
-    y = "TBI padronizada por 100.000", x = "Unidade da Federação"
-  ) +
-  ylim(c(0, NA)) +
-  theme_minimal()
-print(gg2)
 
 # -------------------------
 # 11A) Gráficos por UF 
@@ -343,7 +387,10 @@ if (!dir.exists(OUT_DIR)) dir.create(OUT_DIR, recursive = TRUE)
 
 build_plot_uf <- function(uf_code) {
   dados_graf <- TBI_padronizada_dsr %>%
-    filter(cod_uf == uf_code, !is.na(ano), is.finite(ano), ano >= 2000)
+    filter(cod_uf == uf_code,
+           !is.na(ano),
+           ano >= ANO_INICIO,
+           ano <= ANO_FIM)
   if (nrow(dados_graf) == 0) return(NULL)
   
   nome_uf  <- unique(dados_graf$nome_uf)
@@ -351,20 +398,24 @@ build_plot_uf <- function(uf_code) {
   titulo   <- sprintf("Evolução da TBI e TBI padronizada para Tuberculose – %s (%s)", nome_uf, sigla_uf)
   
   ggplot(dados_graf, aes(x = ano)) +
-    geom_ribbon(aes(ymin = TBI_limite_inferior, ymax = TBI_limite_superior, fill = "TBI"), alpha = 0.25) +
-    geom_ribbon(aes(ymin = TBI_padronizada_inf, ymax = TBI_padronizada_sup, fill = "TBI Padronizada"), alpha = 0.25) +
+    geom_ribbon(aes(ymin = TBI_limite_inferior,
+                    ymax = TBI_limite_superior,
+                    fill = "TBI"), alpha = 0.25) +
+    geom_ribbon(aes(ymin = TBI_padronizada_inf,
+                    ymax = TBI_padronizada_sup,
+                    fill = "TBI Padronizada"), alpha = 0.25) +
     geom_line(aes(y = TBI, color = "TBI")) +
     geom_line(aes(y = TBI_padronizada, color = "TBI Padronizada")) +
     labs(
       title   = titulo,
-      caption = "Fonte: SINAN TB (casos novos) + Populações por UF (IBGE).",
+      caption = "Fonte: SINAN TB (casos novos) + Projeções por idade (IBGE).",
       y = "por 100.000 hab.", x = "Ano",
       fill = "Intervalos", color = "Taxas"
     ) +
     scale_x_continuous(
-      limits = c(2000, max(dados_graf$ano, na.rm = TRUE)),
-      breaks = scales::pretty_breaks(n = 10),
-      expand = expansion(mult = c(0, 0.02))
+      limits = c(ANO_INICIO, ANO_FIM),
+      breaks = seq(ANO_INICIO, ANO_FIM, by = 1),
+      expand = expansion(mult = c(0, 0))
     ) +
     ylim(c(0, NA)) +
     theme_minimal() +
@@ -383,10 +434,11 @@ save_plot_uf <- function(uf_code) {
 }
 
 ufs <- sort(unique(TBI_padronizada_dsr$cod_uf))
-ufs <- setdiff(ufs, 99L)  # remove Brasil
+ufs <- setdiff(ufs, 99L)
 walk(ufs, ~ try(save_plot_uf(.x), silent = TRUE))
 
-pdf(file.path(OUT_DIR, "TBI_todas_ufs.pdf"), width = 11.69, height = 8.27)  # A4 landscape
+# PDF único
+pdf(file.path(OUT_DIR, "TBI_todas_ufs.pdf"), width = 11.69, height = 8.27)
 walk(ufs, ~ {
   g <- suppressWarnings(try(build_plot_uf(.x), silent = TRUE))
   if (inherits(g, "ggplot")) print(g)
@@ -396,6 +448,5 @@ dev.off()
 # -------------------------
 # 12) Exportações
 # -------------------------
-saveRDS(TBI_padronizada_dsr, file.path(PATH_BASE, "TBI_padronizada_dsr.rds"))
 write_csv(TBI_padronizada_dsr, file.path(PATH_BASE, "TBI_padronizada_dsr.csv"))
-write_csv(TBI_phe,             file.path(PATH_BASE, "TBI_padronizada_phe.csv"))
+saveRDS(TBI_padronizada_dsr, file.path(PATH_BASE, "TBI_padronizada_dsr.rds"))
