@@ -44,38 +44,6 @@ ARQ_TB    <- file.path(PATH_BASE, "dados_TB_tratado3.csv")
 ARQ_POP   <- file.path(PATH_BASE, "pop_proj_is.csv")
 
 # -------------------------
-# 1) Pacotes
-# -------------------------
-pkgs <- c("pacman")
-if (!all(pkgs %in% rownames(installed.packages())))
-  install.packages(setdiff(pkgs, rownames(installed.packages())))
-suppressWarnings(suppressMessages(library(pacman)))
-
-pacman::p_load(
-  tidyverse,
-  janitor,
-  stringr,
-  lubridate,
-  readr,
-  purrr,
-  dsr,
-  frailtypack,          
-  PHEindicatormethods
-)
-
-
-if (!requireNamespace("dsr", quietly = TRUE)) {
-  packageurl <- "https://cran.r-project.org/src/contrib/Archive/dsr/dsr_0.2.2.tar.gz"
-  install.packages(packageurl, repos = NULL, type = "source")
-}
-
-if (!requireNamespace("remotes", quietly = TRUE)) install.packages("remotes")
-if (!requireNamespace("PHEindicatormethods", quietly = TRUE)) {
-  remotes::install_github("ukhsa-collaboration/PHEindicatormethods",
-                          build_vignettes = FALSE, dependencies = TRUE)
-}
-
-# -------------------------
 # 2) Tabela de UFs 
 # -------------------------
 UF_NOMES <- tibble::tribble(
