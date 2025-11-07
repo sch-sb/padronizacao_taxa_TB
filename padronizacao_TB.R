@@ -39,9 +39,6 @@ ANO_INICIO <- 2013
 ANO_FIM    <- 2024     
 ANO_PADRAO <- 2022     
 
-PATH_BASE <- "C:/Users/sacha/Documents/Padronizacao_TB"
-ARQ_TB    <- file.path(PATH_BASE, "dados_TB_tratado3.csv")
-ARQ_POP   <- file.path(PATH_BASE, "pop_proj_is.csv")
 
 # -------------------------
 # 2) Tabela de UFs 
